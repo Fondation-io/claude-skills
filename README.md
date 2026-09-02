@@ -64,7 +64,7 @@ The plates are drawn by `gpt-image-2` (OpenRouter, `POST /api/v1/images`, aspect
 ## Installation
 
 ```bash
-git clone git@github.com:darksip/claude-skills.git
+git clone git@github.com:fondation-io/claude-skills.git
 ln -s "$PWD/claude-skills/codex-review" ~/.claude/skills/codex-review
 ```
 
