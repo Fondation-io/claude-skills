@@ -1,71 +1,65 @@
 # claude-skills
 
-Skills Claude Code personnelles. Une seule pour l'instant : **codex-review**.
+Personal Claude Code skills. One so far: **codex-review**. Version française : [README-fr.md](README-fr.md).
 
-## codex-review — la boucle de review adversariale
+## codex-review — the adversarial review loop
 
-Deux modèles, un document, une dispute bornée. Claude écrit (spec, plan, puis code) et arbitre ; OpenAI Codex critique en lecture seule, round après round, jusqu'à `VERDICT: APPROVED` ou le plafond de rounds. La conversation avec le critique survit d'une invocation à l'autre : on corrige le document demain, on relance, le reviewer reprend avec toutes ses critiques en tête au lieu de tout redécouvrir.
+Two models, one document, a bounded argument. Claude writes (spec, plan, then code) and referees; OpenAI Codex critiques read-only, round after round, until `VERDICT: APPROVED` or the round cap. The conversation with the critic survives across invocations: fix the document tomorrow, run again, and the reviewer picks up with all its earlier critiques in mind instead of rediscovering everything.
 
-La skill s'utilise après un brainstorming/plan superpowers (`/codex-review` sans argument trouve le document tout seul) et couvre trois étages d'une même feature : la **spec**, le **plan**, puis l'**implémentation** (le diff relu contre le plan, idéalement avant commit).
+The skill runs after a superpowers brainstorming/plan (`/codex-review` with no argument finds the document by itself) and covers three stages of the same feature: the **spec**, the **plan**, then the **implementation** (the diff reviewed against the plan, ideally before commit).
 
-Quatre schémas racontent le fonctionnement, du survol au détail.
+Four diagrams tell the story, from the overview down to the details.
 
-### Niveau 1 — l'architecture
+### Level 1 — the architecture
 
-![Architecture de la skill](codex-review/architecture.png)
+![Architecture of the skill](codex-review/architecture.png)
 
-Tout y est, de gauche à droite :
+Everything is there, left to right:
 
-- **La colonne des trois étages.** Spec, plan, implémentation (le diff) — une feature descend ces trois marches, et l'annotation le dit : *une feature, une session*. Le même fil Codex accompagne les trois étages, si bien que le reviewer qui a attaqué la spec puis le plan finit par juger le code en connaissance de cause.
-- **La boucle centrale.** Claude (auteur et arbitre) envoie *doc + prompt* ; Codex (un terminal, critique en lecture seule) renvoie un *VERDICT* : `APPROVED` ou `REVISE`. Le compteur *MAX ROUNDS* borne la dispute — elle se termine toujours.
-- **Le cliquet de simplicité** sur le chemin du retour : chaque correction acceptée passe ce filtre avant de toucher le document (détaillé planche 4).
-- **L'état persistant**, à droite : `sessions.json` (le fil Codex de chaque feature, relié par son *thread_id*), `review-log.md` (tout le débat, verbatim) et `stream.jsonl` (la progression en direct pendant qu'un round tourne).
-- **La signature humaine**, en bas : rien ne s'implémente sans le oui final de l'utilisateur.
+- **The column of three stages.** Spec, plan, implementation (the diff). One feature walks down these three steps, and the annotation says it: *one feature, one session*. The same Codex thread follows all three stages, so the reviewer that attacked the spec and then the plan ends up judging the code with full context.
+- **The central loop.** Claude (author and referee) sends *doc + prompt*; Codex (a terminal, read-only critic) returns a *VERDICT*: `APPROVED` or `REVISE`. The *MAX ROUNDS* counter bounds the argument. It always ends.
+- **The simplicity ratchet** on the way back: every accepted fix passes this filter before touching the document (detailed in plate 4).
+- **The persistent state**, on the right: `sessions.json` (each feature's Codex thread, linked by its *thread_id* and *written only after a successful round*, never at launch), `review-log.md` (the whole debate, verbatim) and `stream.jsonl` (live progress while a round runs).
+- **The human sign-off**, at the bottom: nothing gets implemented without the user's final yes.
 
-### Niveau 2a — le kickoff : quel doc, quelle session
+### Level 2a — the kickoff: which doc, which session
 
-![Kickoff — choix du doc et de la session](codex-review/architecture-kickoff.png)
+![Kickoff — choosing the doc and the session](codex-review/architecture-kickoff.png)
 
-Ce qui se passe avant le premier round.
+What happens before the first round.
 
-À gauche, **l'entonnoir à quatre plateaux** : invoquée sans argument, la skill devine le document en essayant quatre sources dans l'ordre — ① le document qu'on vient d'écrire dans la conversation, ② un argument en cours dans `sessions.json`, ③ le disque (`git status`, le doc le plus récent), ④ sinon une seule question. Le résultat (*doc + type + feature*) est toujours annoncé, jamais silencieux : l'utilisateur peut corriger avant de brûler un round.
+On the left, **the four-tray funnel**: invoked with no argument, the skill guesses the document by trying four sources in order: ① the document just written in the conversation, ② an argument in progress in `sessions.json`, ③ the disk (`git status`, the most recent doc), ④ otherwise a single question. The result (*doc + type + feature*) is always announced, never silent: the user can correct it before a round is spent.
 
-À droite, **les trois rails vers la bobine** (le fil Codex) : même doc → on reprend le fil ; spec → plan → impl d'une même feature → toujours le même fil ; autre feature → fil neuf. Le fil cassé se traite avec prudence : seul un fil définitivement mort justifie de repartir (une erreur passagère d'authentification ne détruit jamais une session valide — nuance ajoutée après la review, le schéma simplifie).
+On the right, **three tracks into the spool** (the Codex thread): same doc → resume the thread; spec → plan → impl of one feature → still the same thread; another feature → a new thread. A broken thread is handled with care: only a thread that is *truly dead* justifies starting over (logged), while a *passing error* (auth, model, timeout) stops the run and leaves the state untouched.
 
-En bas, **le triangle de couplage** : le document, `sessions.json` et le *thread_id* se tiennent — une entrée par feature, pas de doublon.
+At the bottom, **the coupling triangle**: the document, `sessions.json` and the *thread_id* hold together. One entry per feature, no duplicates.
 
-### Niveau 2b — un round, concrètement
+### Level 2b — one round, up close
 
-![Un round, concrètement](codex-review/architecture-round.png)
+![One round, up close](codex-review/architecture-round.png)
 
-L'anatomie d'un aller-retour.
+The anatomy of one round trip.
 
-1. **La consigne.** Claude écrit le prompt de review, qui impose la discipline des critiques : chaque trouvaille est étiquetée *ça casse* (avec le scénario de casse) ou *trop compliqué* — chaque critique doit prouver son coût.
-2. **L'enclos en lecture seule.** Codex travaille enfermé : son shell et ses accès fichiers ne peuvent rien écrire (*jamais d'écriture* — garantie qui couvre les outils intégrés de Codex ; les intégrations externes type MCP sont vérifiées à part au kickoff).
-3. **Le ticker.** L'activité sort en continu sur `stream.jsonl` — démarré, il lit les fichiers, terminé — qu'on regarde toutes les 30-60 s, avec un garde d'inactivité (10 minutes sans événement) et un plafond dur de 45 minutes : un round qui pend échoue bruyamment au lieu de traîner en silence.
-4. **Le verdict.** `APPROVED (validé)` ou `REVISE (à revoir)`. Sur REVISE, Claude corrige et repart — même conversation. Tout le débat s'accumule dans `review-log.md`, en un fichier par feature.
+1. **The brief.** Claude writes the review prompt, which imposes the critique discipline: every finding is tagged *it breaks* (with the failure scenario) or *too complicated*. Every critique must prove its cost. Before the brief leaves, a stamp asks *doc really changed? hash check*: the document's hash is compared with the previous round's, and an unchanged document is never resubmitted (two real rounds were once burnt that way after a failed edit script).
+2. **The read-only pen.** Codex works locked in: its shell and file access can write nothing, temp directories included. That is also why it cannot run the test suite itself. In implementation mode the *test results come from Claude*, pasted into the prompt.
+3. **The ticker.** Activity streams continuously to `stream.jsonl` (started, reading files, done), watched every 30-60 s. The guard is an inactivity guard, not a wall clock: *10 minutes of silence* on the stream stops the round, with a hard cap of 45 minutes. Real first rounds on a large document take 14 to 18 minutes.
+4. **The verdict.** `APPROVED (accepted)` or `REVISE (fix and resubmit)`. On REVISE, Claude fixes and goes again, same conversation. The whole debate accumulates in `review-log.md`, one file per feature.
 
-### Niveau 2c — le cliquet de simplicité
+### Level 2c — the simplicity ratchet
 
-![Le cliquet de simplicité](codex-review/architecture-cliquet.png)
+![The simplicity ratchet](codex-review/architecture-cliquet.png)
 
-Le garde-fou contre la sur-ingénierie, appliqué par Claude à chaque REVISE.
+The guard against over-engineering, applied by Claude on every REVISE.
 
-Les critiques arrivent sur le convoyeur et chaque correction candidate passe **deux portes** : *changement minimal ?* (est-ce la plus petite modification qui résout la casse ?) et *système le plus simple ?* (la correction laisse-t-elle la machine avec autant ou moins de rouages ?). La balance en dessous fixe la règle d'or : *ajouter un rouage exige une preuve* — pas de mécanisme spéculatif.
+Critiques arrive on the conveyor. First stop, the magnifying glass: *is the claim true? check the code first*. A concretely worded critique can still be wrong, and a disproven premise is rejected with the disproof logged. Each candidate fix then passes **two doors**: *smallest change?* (is this the smallest modification that resolves the failure?) and *simplest system?* (does the fix leave the machine with as many or fewer moving parts?). The scale below sets the rule: *adding a gear needs proof*. No speculative mechanism.
 
-La pancarte borne le filtre lui-même : *une vraie casse est toujours corrigée* — le cliquet gouverne la forme de la correction, jamais l'existence d'un vrai bug. (Avec une nuance apprise en conditions réelles : la prémisse se vérifie d'abord — une critique formulée concrètement peut être fausse, et se rejette alors preuve à l'appui.)
+The spyglass on the horizon fixes the yardstick: *judge it in tomorrow's production, not today's numbers*. During development the affected population is empty by construction, so "zero users hit this today" is never a reason to reject or shrink a fix. The review protects the state that will ship.
 
-La roue à cliquet ne tourne que dans un sens : *une correction validée ne se rejuge pas*. Et les trois sorties tuent la boucle infinie : *rejeté une fois = rejeté* (sauf preuve nouvelle), *couper les cheveux en quatre : noté, pas bloquant*, et *plus rien ne casse → on s'arrête* — on présente ce qui reste plutôt que de polir sans fin.
+The hanging sign bounds the filter itself: *a real break is always fixed*. The ratchet governs the shape of the fix, never whether a verified bug gets fixed. The ratchet wheel turns one way only: *a validated fix is not re-judged*. And the three exits kill the infinite loop: *rejected once = rejected* (unless new proof), *hair-splitting: noted, not blocking*, and *nothing breaks → we stop*. What is left is shown rather than polished forever. Every rejection is written down.
 
-## Fidélité des schémas
+## Regenerating the plates
 
-Les planches sont dessinées par `gpt-image-2` (chaque `architecture-*-body.txt` contient le scénario exact pour regénérer). Elles datent d'avant le durcissement issu de la self-review adversariale (5 rounds, voir `.codex-review/codex-review-skill-review-log.md`) ; trois simplifications à connaître :
-
-- « fil mort → repartir » : seul un fil **définitivement** mort repart de zéro ; une erreur transitoire arrête sans toucher l'état.
-- « jamais d'écriture » : garantie du bac à sable shell/fichiers de Codex ; les intégrations externes (MCP) sont signalées à part au kickoff.
-- L'état (`sessions.json`) ne s'écrit qu'après un round réussi, jamais dès le démarrage du fil.
-- « plafond 10 min » : remplacé le 2026-09-02 par un garde d'inactivité (10 min sans événement dans le stream) et un plafond dur de 45 min — les rounds 1 réels sur un gros doc durent 14 à 18 min.
-- Avant chaque resoumission, la skill vérifie que le doc a réellement changé (`doc_sha256` dans `sessions.json`) ; en mode impl, Claude fournit les résultats de tests à Codex, dont le bac à sable interdit toute écriture, `/tmp` compris.
+The plates are drawn by `gpt-image-2` (OpenRouter, `POST /api/v1/images`, aspect ratio 3:2, 2K). Each `codex-review/architecture*-body.txt` holds the exact scenario; append `codex-review/STYLE.txt` to it to get the full prompt. Generate the architecture plate first, then pass it as `input_references` for the three others so the same hand draws all four. Check the lettering on every plate: about one plate in four drops or misspells a label and needs a second run. Cost is around $0.05 to $0.18 per plate.
 
 ## Installation
 
@@ -74,4 +68,4 @@ git clone git@github.com:darksip/claude-skills.git
 ln -s "$PWD/claude-skills/codex-review" ~/.claude/skills/codex-review
 ```
 
-Usage : `/codex-review` (inférence automatique), ou avec arguments — `feature=<slug>`, `type=spec|plan|impl`, `rounds=<n>`, `reasoning=low|medium|high|xhigh|max`, `fresh=1`. Prérequis : `codex` CLI ≥ 0.130, authentifié (`codex login`). Le contrat complet est dans [codex-review/SKILL.md](codex-review/SKILL.md).
+Usage: `/codex-review` (automatic inference), or with arguments: `feature=<slug>`, `type=spec|plan|impl`, `rounds=<n>`, `reasoning=low|medium|high|xhigh|max`, `fresh=1`. Prerequisite: `codex` CLI ≥ 0.130, authenticated (`codex login`). The full contract is in [codex-review/SKILL.md](codex-review/SKILL.md).
