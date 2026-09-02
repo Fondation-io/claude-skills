@@ -42,7 +42,7 @@ L'anatomie d'un aller-retour.
 
 1. **La consigne.** Claude écrit le prompt de review, qui impose la discipline des critiques : chaque trouvaille est étiquetée *ça casse* (avec le scénario de casse) ou *trop compliqué* — chaque critique doit prouver son coût.
 2. **L'enclos en lecture seule.** Codex travaille enfermé : son shell et ses accès fichiers ne peuvent rien écrire (*jamais d'écriture* — garantie qui couvre les outils intégrés de Codex ; les intégrations externes type MCP sont vérifiées à part au kickoff).
-3. **Le ticker.** L'activité sort en continu sur `stream.jsonl` — démarré, il lit les fichiers, terminé — qu'on regarde toutes les 30-60 s, avec un plafond de 10 minutes : un round qui traîne échoue bruyamment au lieu de pendre en silence.
+3. **Le ticker.** L'activité sort en continu sur `stream.jsonl` — démarré, il lit les fichiers, terminé — qu'on regarde toutes les 30-60 s, avec un garde d'inactivité (10 minutes sans événement) et un plafond dur de 45 minutes : un round qui pend échoue bruyamment au lieu de traîner en silence.
 4. **Le verdict.** `APPROVED (validé)` ou `REVISE (à revoir)`. Sur REVISE, Claude corrige et repart — même conversation. Tout le débat s'accumule dans `review-log.md`, en un fichier par feature.
 
 ### Niveau 2c — le cliquet de simplicité
@@ -64,6 +64,8 @@ Les planches sont dessinées par `gpt-image-2` (chaque `architecture-*-body.txt`
 - « fil mort → repartir » : seul un fil **définitivement** mort repart de zéro ; une erreur transitoire arrête sans toucher l'état.
 - « jamais d'écriture » : garantie du bac à sable shell/fichiers de Codex ; les intégrations externes (MCP) sont signalées à part au kickoff.
 - L'état (`sessions.json`) ne s'écrit qu'après un round réussi, jamais dès le démarrage du fil.
+- « plafond 10 min » : remplacé le 2026-09-02 par un garde d'inactivité (10 min sans événement dans le stream) et un plafond dur de 45 min — les rounds 1 réels sur un gros doc durent 14 à 18 min.
+- Avant chaque resoumission, la skill vérifie que le doc a réellement changé (`doc_sha256` dans `sessions.json`) ; en mode impl, Claude fournit les résultats de tests à Codex, dont le bac à sable interdit toute écriture, `/tmp` compris.
 
 ## Installation
 
