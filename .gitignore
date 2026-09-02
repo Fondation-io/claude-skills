@@ -1,2 +1,3 @@
 .codex-review/sessions.json
 .codex-review/*-stream.jsonl
+.DS_Store
